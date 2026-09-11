@@ -1,4 +1,4 @@
-import { INSERT_BEFORE_HEADING, MARKERS, RUBRIC_KEYS } from "./config.js";
+import { CHANGELOG, MARKERS, RUBRIC_KEYS, SCOUT_RESOURCE_NAME } from "./config.js";
 import type { Candidate, Evidence } from "./schema.js";
 import { canonicalUrl, type EvidenceCheck } from "./verify.js";
 
@@ -18,7 +18,8 @@ function titleTokens(title: string): Set<string> {
       .toLowerCase()
       .replace(/[^\p{L}\p{N}\s]/gu, " ")
       .split(/\s+/)
-      .filter((w) => w.length >= 3 && !STOPWORDS.has(w)),
+      .filter((w) => w.length >= 3 && !STOPWORDS.has(w))
+      .map((w) => (w.length > 3 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w)), // "reminders" matches "reminder"
   );
 }
 
@@ -31,7 +32,7 @@ export function similarity(a: string, b: string): number {
   return inter / (x.size + y.size - inter);
 }
 
-// Titles of every "### " entry in the Resource, human-written or scouted.
+// Titles of every "### " entry, in the shortlist or the scouted list.
 export function existingTitles(content: string): string[] {
   return [...content.matchAll(/^###\s+(.+)$/gm)].map((m) =>
     m[1]
@@ -41,7 +42,7 @@ export function existingTitles(content: string): string[] {
   );
 }
 
-// Every https URL cited anywhere in the Resource, human-written or scouted.
+// Every https URL cited anywhere in a document.
 export function citedUrls(content: string): Set<string> {
   return new Set([...content.matchAll(/https:\/\/[^\s)\]>"'<]+/g)].map((m) => canonicalUrl(m[0].replace(/[.,;:]+$/, ""))));
 }
@@ -52,7 +53,7 @@ export const isDuplicate = (title: string, existing: string[]) => existing.some(
 export function clean(s: string, max: number): string {
   const flat = s
     .replace(/<!--|-->/g, " ")
-    .replace(/idea-scout:(start|end)/gi, " ")
+    .replace(/idea-scout:[\w:-]*/gi, " ")
     .replace(/[<>`]/g, "")
     .replace(/^#+\s*/, "")
     .replace(/\s+/g, " ")
@@ -91,54 +92,114 @@ export function scoutedEntries(content: string): string[] {
   const start = content.indexOf(MARKERS.start);
   const end = content.indexOf(MARKERS.end);
   if (start < 0 || end < start) return [];
-  const inner = content.slice(start + MARKERS.start.length, end);
-  return inner
+  return content
+    .slice(start + MARKERS.start.length, end)
     .split(/^(?=### )/m)
     .filter((s) => s.startsWith("### "))
     .map((s) => s.trim());
 }
 
-export interface BlockMeta {
+export interface ListMeta {
   runDate: string;
   handle: string;
   taskId: number;
-  added: number;
+  shortlistUrl: string;
   considered: number;
 }
 
-export function renderBlock(entries: string[], meta: BlockMeta): string {
+export function renderBlock(entries: string[], meta: ListMeta & { added: number }): string {
   return [
     MARKERS.start,
-    "## Scouted candidates (automated, unreviewed)",
+    "## Candidates",
     "",
-    `An automated scout run by \`@${meta.handle}\` for task #${meta.taskId} adds entries here. Before anything is published, the scout opens each cited page and checks that the quote is actually on it. The scores are a model's first judgment, and nothing here is agreed. To adopt an entry, move it into the shortlist above. To pause the scout, say so in the #${meta.taskId} thread.`,
-    "",
-    `_Last update ${meta.runDate}: ${meta.added} added from ${meta.considered} considered. ${entries.length} shown here; older entries remain in version history._`,
+    `_Last update ${meta.runDate}: ${meta.added} added from ${meta.considered} considered. ${entries.length} shown, newest first; older entries remain in version history._`,
     "",
     entries.join("\n\n"),
     MARKERS.end,
   ].join("\n");
 }
 
-export function mergeIntoResource(
-  content: string,
+// The standalone list the first publishing run creates. People may edit anything outside the marked sections.
+export function renderTemplate(meta: ListMeta): string {
+  return [
+    `# ${SCOUT_RESOURCE_NAME}`,
+    "",
+    `This list is kept by an automated scout run by \`@${meta.handle}\` for task #${meta.taskId}. It is separate from the reviewed [candidate shortlist](${meta.shortlistUrl}), which the scout never edits.`,
+    "",
+    "- **How entries get here:** once a day the scout looks for new candidate problems and adds at most three. Before adding one, it opens every cited page and checks that the quote is actually there. Anything it cannot verify is dropped.",
+    "- **What an entry is:** a lead for people to judge, not a decision. The scores are a model's first judgment, and a quote being on a page does not prove it supports the idea.",
+    `- **To adopt an entry:** propose it for the shortlist in the #${meta.taskId} thread.`,
+    `- **To pause the scout:** say so in the #${meta.taskId} thread.`,
+    "",
+    MARKERS.start,
+    MARKERS.end,
+    "",
+    CHANGELOG.heading,
+    "",
+  ].join("\n");
+}
+
+export interface RunSummary {
+  runDate: string;
+  titles: string[];
+  considered: number;
+  checked: number;
+  verified: number;
+  runUrl?: string;
+}
+
+export function renderChangelogLine(s: RunSummary): string {
+  const n = s.titles.length;
+  const titles = s.titles.map((t) => `"${clean(t, 90)}"`).join("; ");
+  const sources = `${s.verified} of ${s.checked} cited source${s.checked === 1 ? "" : "s"} verified`;
+  const link = s.runUrl ? ` [Run log](${safeUrl(s.runUrl)}).` : "";
+  return `- **${s.runDate}, automated scout** — added ${n} candidate${n === 1 ? "" : "s"}: ${titles}. ${s.considered} considered; ${sources}.${link}`;
+}
+
+// Adds a line inside the scout's own marked lines, first under the Changelog heading. Other lines are untouched.
+export function upsertChangelog(content: string, line: string, maxLines: number = CHANGELOG.maxLines): string {
+  const start = content.indexOf(CHANGELOG.start);
+  const end = content.indexOf(CHANGELOG.end);
+  if (start >= 0 && end > start) {
+    const prior = content
+      .slice(start + CHANGELOG.start.length, end)
+      .split("\n")
+      .filter((l) => l.startsWith("- "));
+    const block = [CHANGELOG.start, ...[line, ...prior].slice(0, maxLines), CHANGELOG.end].join("\n");
+    return content.slice(0, start) + block + content.slice(end + CHANGELOG.end.length);
+  }
+  const block = [CHANGELOG.start, line, CHANGELOG.end].join("\n");
+  const h = content.indexOf(`\n${CHANGELOG.heading}`);
+  if (h < 0) return `${content.trimEnd()}\n\n${CHANGELOG.heading}\n\n${block}\n`;
+  const headingEnd = content.indexOf("\n", h + 1);
+  if (headingEnd < 0) return `${content.trimEnd()}\n\n${block}\n`;
+  return `${content.slice(0, headingEnd)}\n\n${block}${content.slice(headingEnd)}`;
+}
+
+// Builds the next version of the scout's own list. `existing` is null before the list has been created.
+export function mergeIntoScoutList(
+  existing: string | null,
   newEntries: string[],
-  meta: Omit<BlockMeta, "added">,
+  meta: ListMeta,
   limits: { maxEntries: number; maxBytes: number },
+  changelogLine?: string,
 ): string {
-  let entries = [...newEntries, ...scoutedEntries(content)].slice(0, limits.maxEntries);
+  const base =
+    existing === null
+      ? renderTemplate(meta)
+      : existing.includes(MARKERS.start) && existing.includes(MARKERS.end)
+        ? existing
+        : `${existing.trimEnd()}\n\n${MARKERS.start}\n${MARKERS.end}\n`;
+  let entries = [...newEntries, ...scoutedEntries(base)].slice(0, limits.maxEntries);
   const build = () => {
-    const block = renderBlock(entries, { ...meta, added: newEntries.length });
-    const start = content.indexOf(MARKERS.start);
-    const end = content.indexOf(MARKERS.end);
-    if (start >= 0 && end > start) return content.slice(0, start) + block + content.slice(end + MARKERS.end.length);
-    const at = content.indexOf(`\n${INSERT_BEFORE_HEADING}`);
-    if (at >= 0) return `${content.slice(0, at)}\n\n${block}\n${content.slice(at)}`;
-    return `${content.trimEnd()}\n\n${block}\n`;
+    const start = base.indexOf(MARKERS.start);
+    const end = base.indexOf(MARKERS.end);
+    const doc = base.slice(0, start) + renderBlock(entries, { ...meta, added: newEntries.length }) + base.slice(end + MARKERS.end.length);
+    return changelogLine ? upsertChangelog(doc, changelogLine) : doc;
   };
   let next = build();
   while (Buffer.byteLength(next, "utf8") > limits.maxBytes && entries.length > 0) {
-    entries = entries.slice(0, -1); // drop the oldest scouted entry
+    entries = entries.slice(0, -1); // drop the oldest entry; it stays in version history
     next = build();
   }
   return next;

@@ -2,10 +2,28 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import Anthropic from "@anthropic-ai/sdk";
-import { EXPECTED_HANDLE, LIMITS, RESOURCE_ID, SPACE, TASK_ID } from "./config.js";
-import { CommonsAuthError, activationReceipt, addResourceVersion, getResource, loadCommonsKey, whoami } from "./commons.js";
+import { COMMONS_ORIGIN, EXPECTED_HANDLE, LIMITS, SCOUT_RESOURCE_NAME, SHORTLIST_RESOURCE_ID, SPACE, TASK_ID } from "./config.js";
+import {
+  CommonsAuthError,
+  activationReceipt,
+  addResourceVersion,
+  createResource,
+  findResourceByName,
+  getResource,
+  loadCommonsKey,
+  whoami,
+} from "./commons.js";
 import { gather, type Signal } from "./gather.js";
-import { citedUrls, existingTitles, isDuplicate, mergeIntoResource, renderEntry, totalScore, type Accepted } from "./render.js";
+import {
+  citedUrls,
+  existingTitles,
+  isDuplicate,
+  mergeIntoScoutList,
+  renderChangelogLine,
+  renderEntry,
+  totalScore,
+  type Accepted,
+} from "./render.js";
 import { CandidateSchema, SubmissionSchema } from "./schema.js";
 import { ScoutRefusal, scout, type ScoutResult } from "./scout.js";
 import { canonicalUrl, verifyEvidence } from "./verify.js";
@@ -20,11 +38,14 @@ const { values: args } = parseArgs({
   },
 });
 
+const resourceUrl = (id: string) => `${COMMONS_ORIGIN}/s/${SPACE}/resources/${id}`;
+
 const receipt: Record<string, unknown> = {
   run_id: new Date().toISOString(),
   mode: args.publish ? "publish" : "dry-run",
   space: SPACE,
-  resource: RESOURCE_ID,
+  shortlist: SHORTLIST_RESOURCE_ID,
+  scout_list_name: SCOUT_RESOURCE_NAME,
 };
 
 function finish(code: number, outcome: string): never {
@@ -63,16 +84,21 @@ async function run(): Promise<void> {
       finish(2, `credential belongs to @${me.handle} (${me.status}), expected active @${EXPECTED_HANDLE}`);
     }
   }
+  const handle = (receipt.identity as string | undefined) ?? EXPECTED_HANDLE;
   const start = await activationReceipt();
   receipt.activation_pack_version = start.packVersion;
   receipt.start_cursor = start.cursor;
   receipt.start_content_digest = start.contentDigest;
 
-  // 2. Current Resource: the durable state this run builds on.
-  const resource = await getResource(RESOURCE_ID);
-  receipt.base_version = resource.current_version;
-  const titles = existingTitles(resource.content);
-  const alreadyCited = citedUrls(resource.content);
+  // 2. The reviewed shortlist (read only) and the scout's own list, if it exists yet. Both are used to avoid duplicates.
+  const shortlist = await getResource(SHORTLIST_RESOURCE_ID);
+  receipt.shortlist_version = shortlist.current_version;
+  const found = await findResourceByName(SCOUT_RESOURCE_NAME, handle);
+  const scoutList = found ? await getResource(found.id) : null;
+  receipt.scout_list = scoutList ? { id: scoutList.id, base_version: scoutList.current_version } : "not created yet";
+  const known = `${shortlist.content}\n${scoutList?.content ?? ""}`;
+  const titles = existingTitles(known);
+  const alreadyCited = citedUrls(known);
 
   // 3. Leads.
   const gathered = await gather();
@@ -101,7 +127,10 @@ async function run(): Promise<void> {
   for (const raw of result.candidates) {
     const parsed = CandidateSchema.safeParse(raw);
     if (!parsed.success) {
-      rejected.push({ title: String((raw as { title?: unknown })?.title ?? "?"), reason: `schema: ${parsed.error.issues[0]?.message}` });
+      rejected.push({
+        title: String((raw as { title?: unknown })?.title ?? "?"),
+        reason: `schema: ${parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ")}`,
+      });
       continue;
     }
     const c = parsed.data;
@@ -110,7 +139,7 @@ async function run(): Promise<void> {
       continue;
     }
     if (c.evidence.every((e) => alreadyCited.has(canonicalUrl(e.url)))) {
-      rejected.push({ title: c.title, reason: "no new evidence: every source is already cited in the list" });
+      rejected.push({ title: c.title, reason: "no new evidence: every source is already cited in the shortlist or the scouted list" });
       continue;
     }
     if (c.scores.R1 === 0 || c.scores.R2 === 0) {
@@ -142,29 +171,57 @@ async function run(): Promise<void> {
   }
   if (!toPublish.length) finish(0, "HEARTBEAT_OK: no new verified candidates; nothing published");
 
-  // 6. Render. Only the scout's own marked block is rewritten; human-written sections are left untouched.
-  const handle = (receipt.identity as string | undefined) ?? EXPECTED_HANDLE;
+  // 6. Render the next version of the scout's own list. The shortlist is never written.
   const entries = toPublish.map((a) => renderEntry(a, today));
-  const meta = { runDate: today, handle, taskId: TASK_ID, considered: result.candidates.length };
+  const runUrl =
+    process.env.GITHUB_REPOSITORY && process.env.GITHUB_RUN_ID
+      ? `${process.env.GITHUB_SERVER_URL ?? "https://github.com"}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`
+      : undefined;
+  const changelogLine = renderChangelogLine({
+    runDate: today,
+    titles: toPublish.map((a) => a.candidate.title),
+    considered: result.candidates.length,
+    checked,
+    verified,
+    runUrl,
+  });
+  receipt.changelog_line = changelogLine;
+  const meta = { runDate: today, handle, taskId: TASK_ID, shortlistUrl: resourceUrl(SHORTLIST_RESOURCE_ID), considered: result.candidates.length };
   const limits = { maxEntries: LIMITS.maxScoutedEntries, maxBytes: LIMITS.resourceMaxBytes };
-  let next = mergeIntoResource(resource.content, entries, meta, limits);
+  let next = mergeIntoScoutList(scoutList?.content ?? null, entries, meta, limits, changelogLine);
   fs.mkdirSync(args.out!, { recursive: true });
   fs.writeFileSync(path.join(args.out!, "preview.md"), next);
 
-  if (!args.publish) finish(0, `dry-run: ${toPublish.length} candidate(s) rendered to ${path.join(args.out!, "preview.md")}; nothing published`);
-
-  // 7. Publish. Re-read right before writing; if a human edited meanwhile, rebuild on their version.
-  const latest = await getResource(RESOURCE_ID);
-  if (latest.current_version !== resource.current_version) {
-    receipt.rebased_from = resource.current_version;
-    next = mergeIntoResource(latest.content, entries, meta, limits);
+  const target = scoutList ? `add a version to "${SCOUT_RESOURCE_NAME}"` : `create "${SCOUT_RESOURCE_NAME}"`;
+  if (!args.publish) {
+    finish(0, `dry-run: would ${target} with ${toPublish.length} candidate(s); preview in ${path.join(args.out!, "preview.md")}; nothing published`);
   }
-  const saved = await addResourceVersion(key!, RESOURCE_ID, next);
-  const check = await getResource(RESOURCE_ID);
-  if (check.content !== next) finish(1, `published version ${saved.current_version} but the read-back differs; inspect manually`);
-  receipt.published_version = saved.current_version;
+
+  // 7. Publish. Re-read right before writing; if someone edited the list meanwhile, rebuild on their version.
+  let savedId: string;
+  let savedVersion: string;
+  if (scoutList) {
+    const latest = await getResource(scoutList.id);
+    if (latest.current_version !== scoutList.current_version) {
+      receipt.rebased_from = scoutList.current_version;
+      next = mergeIntoScoutList(latest.content, entries, meta, limits, changelogLine);
+    }
+    const saved = await addResourceVersion(key!, scoutList.id, next);
+    savedId = scoutList.id;
+    savedVersion = saved.current_version;
+  } else {
+    const appeared = await findResourceByName(SCOUT_RESOURCE_NAME, handle);
+    if (appeared) finish(1, `the scouted list was created by another run meanwhile (${appeared.id}); rerun to add to it`);
+    const created = await createResource(key!, SCOUT_RESOURCE_NAME, next);
+    savedId = created.id;
+    savedVersion = created.current_version;
+    receipt.created_scout_list = true;
+  }
+  const check = await getResource(savedId);
+  if (check.content !== next) finish(1, `saved ${savedVersion} but the read-back differs; inspect ${resourceUrl(savedId)}`);
+  receipt.scout_list = { id: savedId, published_version: savedVersion, url: resourceUrl(savedId) };
   receipt.end_cursor = (await activationReceipt()).cursor;
-  finish(0, `published ${toPublish.length} candidate(s) as ${saved.current_version}`);
+  finish(0, `published ${toPublish.length} candidate(s) to "${SCOUT_RESOURCE_NAME}" as ${savedVersion}`);
 }
 
 run().catch((err: unknown) => {

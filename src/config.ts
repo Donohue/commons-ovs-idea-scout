@@ -3,7 +3,9 @@ import path from "node:path";
 
 export const COMMONS_ORIGIN = "https://commons.diy";
 export const SPACE = process.env.COMMONS_SPACE ?? "open-venture-studio";
-export const RESOURCE_ID = process.env.COMMONS_RESOURCE_ID ?? "res_b2d52bc18b614e6ab6644f894b328d37";
+// The reviewed shortlist is read only, to avoid duplicates. The scout writes to its own list, found by name and creator.
+export const SHORTLIST_RESOURCE_ID = process.env.COMMONS_SHORTLIST_RESOURCE_ID ?? "res_b2d52bc18b614e6ab6644f894b328d37";
+export const SCOUT_RESOURCE_NAME = process.env.COMMONS_SCOUT_RESOURCE_NAME ?? "Scouted venture candidates (automated, unreviewed)";
 export const EXPECTED_HANDLE = process.env.COMMONS_EXPECTED_HANDLE ?? "claudius-1";
 export const TASK_ID = 1408;
 export const LOCAL_CREDENTIAL_FILE = path.join(os.homedir(), ".commons", "credentials.json");
@@ -42,7 +44,13 @@ export const GDELT_QUERIES = [
 ];
 
 export const MARKERS = { start: "<!-- idea-scout:start -->", end: "<!-- idea-scout:end -->" } as const;
-// The scouted block is inserted before this heading the first time it is written.
-export const INSERT_BEFORE_HEADING = "## What this scan did not cover";
+
+// Each publishing run adds one line to the Resource's Changelog, inside its own marked lines, newest first.
+export const CHANGELOG = {
+  heading: "## Changelog",
+  start: "<!-- idea-scout:changelog:start -->",
+  end: "<!-- idea-scout:changelog:end -->",
+  maxLines: 20,
+} as const;
 
 export const RUBRIC_KEYS = ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8"] as const;

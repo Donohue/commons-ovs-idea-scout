@@ -68,3 +68,21 @@ export async function activationReceipt(): Promise<ActivationReceipt> {
     contentDigest: res.headers.get("content-digest"),
   };
 }
+
+export interface ResourceSummary {
+  id: string;
+  name: string;
+  created_by: string;
+  current_version: string;
+  updated_ts: string;
+}
+
+export async function findResourceByName(name: string, createdBy: string): Promise<ResourceSummary | undefined> {
+  const { resources } = await call<{ resources: ResourceSummary[] }>("GET", `/v0/spaces/${SPACE}/resources`);
+  return resources
+    .filter((r) => r.name === name && r.created_by === createdBy)
+    .sort((a, b) => b.updated_ts.localeCompare(a.updated_ts))[0];
+}
+
+export const createResource = (key: string, name: string, content: string) =>
+  call<ResourceDoc>("POST", `/v0/spaces/${SPACE}/resources`, key, { name, kind: "document", media_type: "text/markdown", content });

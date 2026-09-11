@@ -2,30 +2,58 @@ import { z } from "zod";
 
 const Score = z.number().int().min(0).max(2);
 
+// Formatting is not a reason to discard a well-sourced candidate: trim over-long text at a word boundary instead of rejecting it.
+// A trimmed quote stays a verbatim prefix of the original, so it still passes the page check.
+export function truncate(s: string, max: number): string {
+  const t = s.replace(/\s+/g, " ").trim();
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max);
+  const space = cut.lastIndexOf(" ");
+  return (space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd();
+}
+
+export function normalizeDate(s: string): string {
+  const t = s.trim();
+  const iso = t.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+  if (iso) return iso[1];
+  const parsed = Date.parse(t);
+  if (Number.isFinite(parsed)) return new Date(parsed).toISOString().slice(0, 10);
+  return !t || /^unknown$/i.test(t) ? "unknown" : truncate(t, 40);
+}
+
+const text = (min: number, max: number) =>
+  z
+    .string()
+    .transform((s) => truncate(s, max))
+    .pipe(z.string().min(min));
+
 export const EvidenceSchema = z.object({
   url: z.string().url(),
-  quote: z.string().min(12).max(400),
-  publisher: z.string().min(1).max(120),
-  published: z.string().max(20),
+  quote: text(12, 400),
+  publisher: text(1, 120),
+  published: z.string().transform(normalizeDate),
 });
 
 export const CandidateSchema = z.object({
-  title: z.string().min(4).max(100),
-  problem: z.string().min(10).max(600),
-  people: z.string().min(3).max(300),
-  evidence: z.array(EvidenceSchema).min(1).max(3),
-  smallest_test: z.string().min(10).max(600),
+  title: text(4, 100),
+  problem: text(10, 600),
+  people: text(3, 300),
+  evidence: z
+    .array(EvidenceSchema)
+    .min(1)
+    .transform((items) => items.slice(0, 3)),
+  smallest_test: text(10, 600),
   scores: z.object({ R1: Score, R2: Score, R3: Score, R4: Score, R5: Score, R6: Score, R7: Score, R8: Score }),
-  score_notes: z.string().max(600),
-  risks: z.string().max(500),
-  overlap_check: z.string().max(500),
+  score_notes: text(0, 600),
+  risks: text(0, 500),
+  overlap_check: text(0, 500),
 });
 
 export type Candidate = z.infer<typeof CandidateSchema>;
 export type Evidence = z.infer<typeof EvidenceSchema>;
 
 export const SubmissionSchema = z.object({
-  candidates: z.array(z.unknown()).max(6),
+  candidates: z.array(z.unknown()).transform((items) => items.slice(0, 6)),
   notes: z.string(),
 });
 
@@ -46,8 +74,8 @@ export const SUBMIT_TOOL = {
           type: "object",
           properties: {
             title: { type: "string", description: "Short name for the problem, under 90 characters." },
-            problem: { type: "string" },
-            people: { type: "string", description: "Who is affected." },
+            problem: { type: "string", description: "One to three sentences." },
+            people: { type: "string", description: "Who is affected, in one sentence." },
             evidence: {
               type: "array",
               description: "One to three sources you opened in this session.",
@@ -57,13 +85,13 @@ export const SUBMIT_TOOL = {
                   url: { type: "string" },
                   quote: { type: "string", description: "Copied verbatim from the page, at most 300 characters." },
                   publisher: { type: "string" },
-                  published: { type: "string", description: "YYYY-MM-DD as shown on the page, or 'unknown'." },
+                  published: { type: "string", description: "The date shown on the page as YYYY-MM-DD, or 'unknown'." },
                 },
                 required: ["url", "quote", "publisher", "published"],
                 additionalProperties: false,
               },
             },
-            smallest_test: { type: "string", description: "A no-code test that could run within two weeks." },
+            smallest_test: { type: "string", description: "A no-code test that could run within two weeks, in one to three sentences." },
             scores: {
               type: "object",
               properties: {
@@ -74,14 +102,17 @@ export const SUBMIT_TOOL = {
               additionalProperties: false,
             },
             score_notes: { type: "string", description: "One line of reasoning for any score of 0." },
-            risks: { type: "string" },
-            overlap_check: { type: "string", description: "Existing alternatives you found, or 'not checked'." },
+            risks: { type: "string", description: "One or two sentences." },
+            overlap_check: { type: "string", description: "One or two sentences: existing alternatives you found, or 'not checked'." },
           },
           required: ["title", "problem", "people", "evidence", "smallest_test", "scores", "score_notes", "risks", "overlap_check"],
           additionalProperties: false,
         },
       },
-      notes: { type: "string", description: "What you searched and what you rejected, and why. Kept in the private run receipt." },
+      notes: {
+        type: "string",
+        description: "What you searched and what you rejected, and why. This goes into the public run log, so keep it factual.",
+      },
     },
     required: ["candidates", "notes"],
     additionalProperties: false,
