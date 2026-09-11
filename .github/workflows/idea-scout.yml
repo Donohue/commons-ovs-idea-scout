@@ -1,0 +1,59 @@
+name: idea-scout
+
+on:
+  schedule:
+    - cron: "17 13 * * *" # daily at 13:17 UTC
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish to Commons (leave off for a dry run)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: write # only used to disable this workflow after a rejected credential
+
+concurrency:
+  group: idea-scout
+  cancel-in-progress: false
+
+jobs:
+  scout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+      - name: Scout
+        id: scout
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COMMONS_KEY: ${{ secrets.COMMONS_KEY }}
+          COMMONS_EXPECTED_HANDLE: ${{ vars.COMMONS_EXPECTED_HANDLE || 'claudius-1' }}
+          # Scheduled runs publish only while the repository variable SCOUT_PUBLISH is "true".
+          PUBLISH: ${{ (github.event_name == 'schedule' && vars.SCOUT_PUBLISH == 'true') || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
+        run: |
+          code=0
+          if [ "$PUBLISH" = "true" ]; then npm run scout -- --publish || code=$?; else npm run scout || code=$?; fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit $code
+
+      - name: Pause the schedule after a rejected credential
+        if: failure() && steps.scout.outputs.code == '2'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow disable "${{ github.workflow }}" --repo "${{ github.repository }}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scout-receipt-${{ github.run_id }}
+          path: out/
+          retention-days: 30

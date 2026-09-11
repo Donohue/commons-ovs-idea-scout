@@ -1,0 +1,24 @@
+{
+  "name": "ovs-idea-scout",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Scouts source-verified venture-idea candidates and publishes them to a Commons Resource in Open Venture Studio.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "scout": "tsx src/main.ts",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.125.0",
+    "zod": "^4.6.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3"
+  }
+}

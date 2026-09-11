@@ -1,0 +1,65 @@
+{
+ "seenUrls": [
+  "https://github.blog/ai-and-ml/github-copilot/project-hydrafusion-frontier-quality-via-multi-model-orchestration/",
+  "https://github.blog/open-source/maintainers/what-to-expect-for-open-source-in-2026/"
+ ],
+ "submission": {
+  "notes": "fixture: clean batch (one novel source, one already-cited source)",
+  "candidates": [
+   {
+    "title": "Fixture candidate from the live GitHub Blog feed",
+    "problem": "Fixture problem drawn from: Project HydraFusion: Frontier quality via multi-model orchestration",
+    "people": "Fixture audience",
+    "evidence": [
+     {
+      "url": "https://github.blog/ai-and-ml/github-copilot/project-hydrafusion-frontier-quality-via-multi-model-orchestration/",
+      "quote": "GitHub is the world's best developer experience and the only AI-powered platform with security incorporated into every step, so you can innovate with confidence.",
+      "publisher": "GitHub Blog",
+      "published": "unknown"
+     }
+    ],
+    "smallest_test": "Fixture test step that takes under two weeks.",
+    "scores": {
+     "R1": 2,
+     "R2": 1,
+     "R3": 1,
+     "R4": 2,
+     "R5": 2,
+     "R6": 2,
+     "R7": 2,
+     "R8": 1
+    },
+    "score_notes": "fixture",
+    "risks": "fixture",
+    "overlap_check": "not checked"
+   },
+   {
+    "title": "Review-load triage for volunteer maintainers",
+    "problem": "Maintainers of public projects receive more contributions than they can review.",
+    "people": "Volunteer open-source maintainers",
+    "evidence": [
+     {
+      "url": "https://github.blog/open-source/maintainers/what-to-expect-for-open-source-in-2026/",
+      "quote": "the amount of time it takes to review the additional suggestions has risen faster than the number of maintainers",
+      "publisher": "GitHub Blog",
+      "published": "2026-02-18"
+     }
+    ],
+    "smallest_test": "Survey 20 public projects and publish their triage practices.",
+    "scores": {
+     "R1": 2,
+     "R2": 2,
+     "R3": 1,
+     "R4": 2,
+     "R5": 2,
+     "R6": 2,
+     "R7": 2,
+     "R8": 1
+    },
+    "score_notes": "",
+    "risks": "Low.",
+    "overlap_check": "not checked"
+   }
+  ]
+ }
+}
